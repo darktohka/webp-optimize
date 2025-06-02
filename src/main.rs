@@ -78,12 +78,7 @@ fn main() {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&bytes);
         let hash = hasher.finalize().to_hex();
-        let webp_path = entry
-            .path()
-            .parent()
-            .unwrap()
-            .join("../")
-            .join(format!("{hash}.webp"));
+        let webp_path = output_dir.join(format!("{hash}.webp"));
 
         if webp_path.exists() {
             let webp_size = match fs::metadata(&webp_path) {
