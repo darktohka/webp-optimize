@@ -38,8 +38,8 @@ jobs:
           command: build
           target: ${{ matrix.platform.target }}
           args: "--locked --profile release-lto"
-      - name: Publish artifacts and release
-        uses: houseabsolute/actions-rust-release@v0
+      - name: Publish binary
+        uses: actions/upload-artifact@v4
         with:
-          executable-name: webp-optimize
-          target: ${{ matrix.platform.target }}
+          name: ${{ matrix.platform.os-name }}
+          path: target/${{ matrix.platform.target }}/release-lto/webp-optimize
