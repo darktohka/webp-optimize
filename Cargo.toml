@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
 argh = "0"
 blake3 = "1"
 humansize = "2"
-image = { version = "0", features = ["jpeg", "png"], default-features = false }
+image = { version = "0", features = ["jpeg", "png", "rayon"], default-features = false }
+rayon = "1"
 walkdir = "2"
 webp = "0"
 

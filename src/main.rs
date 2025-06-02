@@ -3,6 +3,9 @@ use humansize::FormatSizeOptions;
 use humansize::SizeFormatter;
 use image::DynamicImage;
 use image::ImageReader;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
+use std::sync::{Arc, Mutex};
 
 use std::{
     fs::{self, File},
@@ -27,59 +30,84 @@ struct Cli {
     quality: u8,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     let cli: Cli = argh::from_env();
 
     let input_dir = Path::new(&cli.input);
     let output_dir = Path::new(&cli.output);
 
     if !output_dir.exists() {
-        fs::create_dir_all(output_dir)?;
+        fs::create_dir_all(output_dir).expect("Failed to create output directory");
     }
 
-    let mut total_original_bytes: u64 = 0;
-    let mut total_webp_bytes: u64 = 0;
-
-    for entry in walkdir::WalkDir::new(input_dir)
+    let entries: Vec<_> = walkdir::WalkDir::new(input_dir)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
-    {
+        .collect();
+
+    // Use a Mutex to safely update totals from multiple threads
+    let total_original_bytes = Arc::new(Mutex::new(0u64));
+    let total_webp_bytes = Arc::new(Mutex::new(0u64));
+
+    entries.par_iter().for_each(|entry| {
         let path = entry.path();
 
         // Read file bytes
-        let mut file = File::open(path)?;
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(_) => {
+                eprintln!("Failed to open file: {:?}", path);
+                return;
+            }
+        };
+
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        total_original_bytes += bytes.len() as u64;
+
+        if file.read_to_end(&mut bytes).is_err() {
+            eprintln!("Failed to read file: {:?}", path);
+            return;
+        }
+
+        {
+            let mut orig = total_original_bytes.lock().unwrap();
+            *orig += bytes.len() as u64;
+        }
 
         // Calculate blake2b hash
         let mut hasher = blake3::Hasher::new();
         hasher.update(&bytes);
         let hash = hasher.finalize().to_hex();
-        let webp_path = output_dir.join(format!("{hash}.webp"));
+        let webp_path = entry
+            .path()
+            .parent()
+            .unwrap()
+            .join("../")
+            .join(format!("{hash}.webp"));
 
         if webp_path.exists() {
-            // If already exists, count its size
-            let webp_size = fs::metadata(&webp_path)?.len();
+            let webp_size = match fs::metadata(&webp_path) {
+                Ok(meta) => meta.len(),
+                Err(_) => 0,
+            };
 
+            let mut webp = total_webp_bytes.lock().unwrap();
             if webp_size == 0 {
-                total_webp_bytes += bytes.len() as u64; // Count original size if not saving
+                *webp += bytes.len() as u64;
             } else {
-                total_webp_bytes += webp_size;
+                *webp += webp_size;
             }
-
-            continue;
+            return;
         }
 
         println!("Processing: {:?}", path);
 
         // Try to decode image
-        let img = ImageReader::open(path)?
+        let img = ImageReader::open(path)
+            .expect("Failed to open image")
             .decode()
-            .map_err(|e| anyhow::anyhow!("Failed to decode image {:?}: {:?}", path, e))?;
+            .expect("Failed to decode image");
 
-        // Convert grayscale images to RGB/RGBA
         let img = match img {
             DynamicImage::ImageLuma8(ref gray) => {
                 DynamicImage::ImageRgb8(DynamicImage::ImageLuma8(gray.clone()).to_rgb8())
@@ -92,25 +120,29 @@ fn main() -> anyhow::Result<()> {
 
         // Encode as webp
         let mut webp_bytes = Vec::new();
-        {
-            let encoder = webp::Encoder::from_image(&img)
-                .map_err(|e| anyhow::anyhow!("WebP encode error: {:?}", e))?;
-            let encoded = encoder.encode(cli.quality as f32);
-            webp_bytes.extend_from_slice(&encoded);
-        }
+        let encoder = match webp::Encoder::from_image(&img) {
+            Ok(enc) => enc,
+            Err(_) => return,
+        };
+        let encoded = encoder.encode(cli.quality as f32);
+        webp_bytes.extend_from_slice(&encoded);
 
-        // Compare sizes
         if webp_bytes.len() < bytes.len() {
-            let mut out = File::create(&webp_path)?;
-            out.write_all(&webp_bytes)?;
-            total_webp_bytes += webp_bytes.len() as u64;
+            if let Ok(mut out) = File::create(&webp_path) {
+                let _ = out.write_all(&webp_bytes);
+            }
+            let mut webp = total_webp_bytes.lock().unwrap();
+            *webp += webp_bytes.len() as u64;
         } else {
-            // Write empty file
-            File::create(&webp_path)?;
-            total_webp_bytes += bytes.len() as u64; // Count original size if not saving
-            // If not saving, count as 0 bytes saved for this file
+            let _ = File::create(&webp_path);
+            let mut webp = total_webp_bytes.lock().unwrap();
+            *webp += bytes.len() as u64;
         }
-    }
+    });
+
+    // Get totals from mutexes
+    let total_original_bytes = *total_original_bytes.lock().unwrap();
+    let total_webp_bytes = *total_webp_bytes.lock().unwrap();
 
     // Print statistics
     let saved_bytes = if total_original_bytes > total_webp_bytes {
@@ -138,6 +170,4 @@ fn main() -> anyhow::Result<()> {
         SizeFormatter::new(saved_bytes, FormatSizeOptions::default()),
         percent_saved
     );
-
-    Ok(())
 }
