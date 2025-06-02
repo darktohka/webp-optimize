@@ -1,0 +1,24 @@
+cargo-features = ["trim-paths"]
+
+[package]
+name = "webp-optimize"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+argh = "0"
+blake3 = "1"
+humansize = "2"
+image = { version = "0", features = ["jpeg", "png"], default-features = false }
+walkdir = "2"
+webp = "0"
+
+[profile.release-lto]
+inherits = "release"
+lto = true
+strip = true
+debug = false
+panic = "abort"
+codegen-units = 1
+trim-paths = true
